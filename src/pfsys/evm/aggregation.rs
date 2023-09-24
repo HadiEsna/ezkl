@@ -30,7 +30,7 @@ use snark_verifier::{
         AccumulationScheme, AccumulationSchemeProver,
     },
     system,
-    util::arithmetic::fe_to_limbs,
+    // util::arithmetic::fe_to_limbs,
     verifier::{self, SnarkVerifier},
 };
 use snark_verifier::{loader::evm::EvmLoader, system::halo2::transcript::evm::EvmTranscript};
@@ -216,7 +216,7 @@ impl AggregationCircuit {
         }
 
         trace!("Accumulator");
-        let (accumulator, as_proof) = {
+        let (_accumulator, as_proof) = {
             let mut transcript = PoseidonTranscript::<NativeLoader, _>::new(Vec::new());
             let accumulator =
                 As::create_proof(&Default::default(), &accumulators, &mut transcript, OsRng)
@@ -225,10 +225,8 @@ impl AggregationCircuit {
         };
 
         trace!("KzgAccumulator");
-        let KzgAccumulator { lhs, rhs } = accumulator;
-        let instances = [lhs.x, lhs.y, rhs.x, rhs.y]
-            .map(fe_to_limbs::<_, _, LIMBS, BITS>)
-            .concat();
+
+        let instances = vec![];
 
         Ok(Self {
             svk: *svk,
@@ -245,8 +243,8 @@ impl AggregationCircuit {
 
     /// Number of instance variables for the aggregation circuit, used in generating verifier.
     pub fn num_instance(orginal_circuit_instances: usize) -> Vec<usize> {
-        let accumulation_instances = 4 * LIMBS;
-        vec![accumulation_instances + orginal_circuit_instances]
+        let _accumulation_instances = 4 * LIMBS;
+        vec![orginal_circuit_instances]
     }
 
     /// Instance variables for the aggregation circuit, fed to verifier.
@@ -314,7 +312,7 @@ impl Circuit<Fr> for AggregationCircuit {
 
         range_chip.load_table(&mut layouter)?;
 
-        let (accumulator_limbs, snark_instances) = layouter.assign_region(
+        let (_accumulator_limbs, snark_instances) = layouter.assign_region(
             || "",
             |region| {
                 let ctx = RegionCtx::new(region, 0);
@@ -340,10 +338,10 @@ impl Circuit<Fr> for AggregationCircuit {
         )?;
 
         let mut instance_offset = 0;
-        for limb in accumulator_limbs {
-            main_gate.expose_public(layouter.namespace(|| ""), limb, instance_offset)?;
-            instance_offset += 1;
-        }
+        // for limb in accumulator_limbs {
+        //     main_gate.expose_public(layouter.namespace(|| ""), limb, instance_offset)?;
+        //     instance_offset += 1;
+        // }
 
         for instance in snark_instances.into_iter() {
             for elem in instance.into_iter() {
