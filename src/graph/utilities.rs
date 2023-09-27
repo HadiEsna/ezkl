@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tract_onnx::prelude::{DatumType, Node as OnnxNode, TypedFact, TypedOp};
 #[cfg(not(target_arch = "wasm32"))]
 use tract_onnx::tract_core::ops::{
-    array::{Gather, GatherElements, OneHot, Slice, Topk},
+    array::{Gather, GatherElements, OneHot, ScatterElements, Slice, Topk},
     change_axes::AxisOp,
     cnn::DeconvUnary,
     einsum::EinSum,
@@ -281,6 +281,45 @@ pub fn new_op_from_onnx(
                 num_classes,
             })
         }
+        "ScatterElements" => {
+            if inputs.len() != 3 {
+                return Err(Box::new(GraphError::InvalidDims(
+                    idx,
+                    "scatter elements".to_string(),
+                )));
+            };
+            let op = load_op::<ScatterElements>(node.op(), idx, node.op().name().to_string())?;
+            let axis = op.axis;
+
+            let mut op =
+                SupportedOp::Hybrid(crate::circuit::ops::hybrid::HybridOp::ScatterElements {
+                    dim: axis,
+                    constant_idx: None,
+                });
+
+            // if param_visibility.is_public() {
+            if let Some(c) = inputs[1].opkind().get_mutable_constant() {
+                inputs[1].decrement_const();
+                deleted_indices.push(1);
+                op = SupportedOp::Hybrid(crate::circuit::ops::hybrid::HybridOp::ScatterElements {
+                    dim: axis,
+                    constant_idx: Some(c.raw_values.map(|x| x as usize)),
+                })
+            }
+            // }
+
+            if inputs[1].opkind().is_input() {
+                inputs[1].replace_opkind(SupportedOp::Input(crate::circuit::ops::Input {
+                    scale: 0,
+                    datum_type: InputType::TDim,
+                }));
+                inputs[1].bump_scale(0);
+            }
+
+            op
+
+            // Extract the max value
+        }
         "GatherElements" => {
             if inputs.len() != 2 {
                 return Err(Box::new(GraphError::InvalidDims(
@@ -301,7 +340,7 @@ pub fn new_op_from_onnx(
             if let Some(c) = inputs[1].opkind().get_mutable_constant() {
                 inputs[1].decrement_const();
                 deleted_indices.push(inputs.len() - 1);
-                op = SupportedOp::Hybrid(crate::circuit::ops::hybrid::HybridOp::Gather {
+                op = SupportedOp::Hybrid(crate::circuit::ops::hybrid::HybridOp::GatherElements {
                     dim: axis,
                     constant_idx: Some(c.raw_values.map(|x| x as usize)),
                 })
@@ -773,6 +812,24 @@ pub fn new_op_from_onnx(
             SupportedOp::Linear(PolyOp::Identity)
         }
         "Sign" => SupportedOp::Nonlinear(LookupOp::Sign),
+        "Pow" => {
+            // Extract the slope layer hyperparams from a const
+
+            // if param_visibility.is_public() {
+            if let Some(c) = inputs[1].opkind().get_mutable_constant() {
+                inputs[1].decrement_const();
+                deleted_indices.push(inputs.len() - 1);
+                if c.raw_values.len() > 1 {
+                    unimplemented!("only support scalar pow")
+                }
+                SupportedOp::Nonlinear(LookupOp::Pow {
+                    scale: scale_to_multiplier(inputs[0].out_scales()[0]).into(),
+                    a: crate::circuit::utils::F32(c.raw_values[0]),
+                })
+            } else {
+                unimplemented!("only support constant pow for now")
+            }
+        }
         "Cube" => SupportedOp::Linear(PolyOp::Pow(3)),
         "Square" => SupportedOp::Linear(PolyOp::Pow(2)),
         "ConvUnary" => {

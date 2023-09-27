@@ -31,6 +31,41 @@ impl<F: PrimeField + TensorType + std::marker::Send + std::marker::Sync + Partia
     pub fn is_constant(&self) -> bool {
         matches!(self, ValType::Constant(_) | ValType::AssignedConstant(..))
     }
+
+    /// get felt eval
+    pub fn get_felt_eval(&self) -> Option<F> {
+        let mut res = None;
+        match self {
+            ValType::Value(v) => {
+                v.map(|f| {
+                    res = Some(f);
+                });
+            }
+            ValType::AssignedValue(v) => {
+                v.map(|f| {
+                    res = Some(f.evaluate());
+                });
+            }
+            ValType::PrevAssigned(v) | ValType::AssignedConstant(v, ..) => {
+                v.value_field().map(|f| {
+                    res = Some(f.evaluate());
+                });
+            }
+            ValType::Constant(v) => {
+                res = Some(*v);
+            }
+        }
+        res
+    }
+
+    /// get_prev_assigned
+    pub fn get_prev_assigned(&self) -> Option<AssignedCell<F, F>> {
+        match self {
+            ValType::PrevAssigned(v) => Some(v.clone()),
+            ValType::AssignedConstant(v, _) => Some(v.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl<F: PrimeField + TensorType + PartialOrd> From<ValType<F>> for i32 {
@@ -273,21 +308,9 @@ impl<F: PrimeField + TensorType + PartialOrd> ValTensor<F> {
                 inner: v, dims: _, ..
             } => {
                 // we have to push to an externally created vector or else vaf.map() returns an evaluation wrapped in Value<> (which we don't want)
-                let _ = v.map(|vaf| match vaf {
-                    ValType::Value(v) => v.map(|f| {
+                let _ = v.map(|vaf| {
+                    if let Some(f) = vaf.get_felt_eval() {
                         felt_evals.push(f);
-                    }),
-                    ValType::AssignedValue(v) => v.map(|f| {
-                        felt_evals.push(f.evaluate());
-                    }),
-                    ValType::PrevAssigned(v) | ValType::AssignedConstant(v, ..) => {
-                        v.value_field().map(|f| {
-                            felt_evals.push(f.evaluate());
-                        })
-                    }
-                    ValType::Constant(v) => {
-                        felt_evals.push(v);
-                        Value::unknown()
                     }
                 });
             }
@@ -355,7 +378,7 @@ impl<F: PrimeField + TensorType + PartialOrd> ValTensor<F> {
         Ok(slice)
     }
 
-    /// Calls `get_slice` on the inner tensor.
+    /// Calls `get_single_elem` on the inner tensor.
     pub fn get_single_elem(&self, index: usize) -> Result<ValTensor<F>, Box<dyn Error>> {
         let slice = match self {
             ValTensor::Value {
@@ -526,6 +549,24 @@ impl<F: PrimeField + TensorType + PartialOrd> ValTensor<F> {
                         if *r == F::ZERO {
                             indices.push(i);
                         }
+                    }
+                }
+                Ok(indices)
+            }
+            ValTensor::Instance { .. } => Err(TensorError::WrongMethod),
+        }
+    }
+
+    /// gets constants
+    pub fn get_const_indices(&self) -> Result<Vec<usize>, TensorError> {
+        match self {
+            ValTensor::Value { inner: v, .. } => {
+                let mut indices = vec![];
+                for (i, e) in v.iter().enumerate() {
+                    if let ValType::Constant(_) = e {
+                        indices.push(i);
+                    } else if let ValType::AssignedConstant(_, _) = e {
+                        indices.push(i);
                     }
                 }
                 Ok(indices)
