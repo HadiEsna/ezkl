@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.17;
+pragma solidity ^0.8.20;
+import './LoadInstances.sol';
 
 // This contract serves as a Data Attestation Verifier for the EZKL model.
 // It is designed to read and attest to instances of proofs generated from a specified circuit.
@@ -11,10 +12,10 @@ pragma solidity ^0.8.17;
 // 3. Static Calls: Makes static calls to fetch data from other contracts. See the `staticCall` method.
 // 4. Field Element Conversion: The fixed-point representation is then converted into a field element modulo P using the `toFieldElement` method.
 // 5. Data Attestation: The `attestData` method validates that the public instances match the data fetched and processed by the contract.
-// 6. Proof Verification: The `verifyWithDataAttestation` method has a stubbed assembly block to integrate proof verification.
+// 6. Proof Verification: The `verifyWithDataAttestation` method parses the instances out of the encoded calldata and calls the `attestData` method to validate the public instances,
+//  then calls the `verifyProof` method to verify the proof on the verifier.
 
-
-contract DataAttestationVerifier {
+contract DataAttestation is LoadInstances {
     /**
      * @notice Struct used to make view only calls to accounts to fetch the data that EZKL reads from.
      * @param the address of the account to make calls to
@@ -28,8 +29,7 @@ contract DataAttestationVerifier {
     }
     AccountCall[] public accountCalls;
 
-    uint public constant INPUT_SCALE = 1 << 0;
-    uint[] public outputScales;
+    uint[] public scales;
 
     address public admin;
 
@@ -55,13 +55,13 @@ contract DataAttestationVerifier {
         address[] memory _contractAddresses,
         bytes[][] memory _callData,
         uint256[][] memory _decimals,
-        uint[] memory _outputScales,
+        uint[] memory _scales,
         uint8 _instanceOffset,
         address _admin
     ) {
         admin = _admin;
-        for (uint i; i < _outputScales.length; i++) {
-            outputScales.push(1 << _outputScales[i]);
+        for (uint i; i < _scales.length; i++) {
+            scales.push(1 << _scales[i]);
         }
         populateAccountCalls(_contractAddresses, _callData, _decimals);
         instanceOffset = _instanceOffset;
@@ -225,7 +225,7 @@ contract DataAttestationVerifier {
      * @dev Make the account calls to fetch the data that EZKL reads from and attest to the data.
      * @param instances - The public instances to the proof (the data in the proof that publicly accessible to the verifier).
      */
-    function attestData(uint256[] calldata instances) internal view {
+    function attestData(uint256[] memory instances) internal view {
         require(
             instances.length >= INPUT_CALLS + OUTPUT_CALLS,
             "Invalid public inputs length"
@@ -239,10 +239,7 @@ contract DataAttestationVerifier {
                     account,
                     accountCalls[i].callData[j]
                 );
-                uint256 scale = INPUT_SCALE;
-                if (counter >= INPUT_CALLS) {
-                    scale = outputScales[counter - INPUT_CALLS];
-                }
+                uint256 scale = scales[counter];
                 int256 quantized_data = quantizeData(
                     returnData,
                     accountCalls[i].decimals[j],
@@ -258,14 +255,20 @@ contract DataAttestationVerifier {
         }
     }
 
+
     function verifyWithDataAttestation(
-        uint256[] calldata instances,
-        bytes calldata proof
+        address verifier,
+        bytes calldata encoded
     ) public view returns (bool) {
-        bool success = true;
-        bytes32[] memory transcript;
-        attestData(instances);
-        assembly { /* This is where the proof verification happens*/ }
-        return success;
+        require(verifier.code.length > 0,"Address: call to non-contract");
+        attestData(getInstancesCalldata(encoded));
+        // static call the verifier contract to verify the proof
+        (bool success, bytes memory returndata) = verifier.staticcall(encoded);
+
+        if (success) {
+            return abi.decode(returndata, (bool));
+        } else {
+            revert("low-level call to verifier failed");
+        }
     }
 }

@@ -5,18 +5,14 @@ use crate::commands::{Cli, Commands};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::eth::{deploy_da_verifier_via_solidity, deploy_verifier_via_solidity};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::eth::{fix_verifier_sol, get_contract_artifacts, verify_proof_via_solidity};
+use crate::eth::{fix_da_sol, get_contract_artifacts, verify_proof_via_solidity};
 use crate::graph::input::GraphData;
 use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::graph::{TestDataSource, TestSources};
 use crate::pfsys::evm::aggregation::AggregationCircuit;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::pfsys::evm::evm_verify;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::pfsys::evm::{
-    aggregation::gen_aggregation_evm_verifier, single::gen_evm_verifier, DeploymentCode, YulCode,
-};
+use crate::pfsys::evm::{single::gen_evm_verifier, YulCode};
 use crate::pfsys::{
     create_keys, load_pk, load_vk, save_params, save_pk, Snark, StrategyType, TranscriptType,
 };
@@ -25,7 +21,6 @@ use crate::pfsys::{save_vk, srs::*};
 use crate::RunArgs;
 #[cfg(not(target_arch = "wasm32"))]
 use ethers::types::H160;
-#[cfg(not(target_arch = "wasm32"))]
 use gag::Gag;
 use halo2_proofs::dev::VerifyFailure;
 use halo2_proofs::poly::commitment::Params;
@@ -35,6 +30,8 @@ use halo2_proofs::poly::kzg::strategy::AccumulatorStrategy;
 use halo2_proofs::poly::kzg::{
     commitment::ParamsKZG, strategy::SingleStrategy as KZGSingleStrategy,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
 #[cfg(not(target_arch = "wasm32"))]
 use halo2curves::ff::Field;
@@ -52,8 +49,6 @@ use plotters::prelude::*;
 use rand::Rng;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-#[cfg(not(target_arch = "wasm32"))]
-use snark_verifier::loader::evm;
 use std::error::Error;
 use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
@@ -168,14 +163,14 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             abi_path,
         } => create_evm_verifier(vk_path, srs_path, settings_path, sol_code_path, abi_path),
         #[cfg(not(target_arch = "wasm32"))]
-        Commands::CreateEVMDataAttestationVerifier {
+        Commands::CreateEVMDataAttestation {
             vk_path,
             srs_path,
             settings_path,
             sol_code_path,
             abi_path,
             data,
-        } => create_evm_data_attestation_verifier(
+        } => create_evm_data_attestation(
             vk_path,
             srs_path,
             settings_path,
@@ -300,15 +295,26 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             rpc_url,
             addr_path,
             optimizer_runs,
-        } => deploy_evm(sol_code_path, rpc_url, addr_path, optimizer_runs).await,
+            private_key,
+        } => {
+            deploy_evm(
+                sol_code_path,
+                rpc_url,
+                addr_path,
+                optimizer_runs,
+                private_key,
+            )
+            .await
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        Commands::DeployEvmDataAttestationVerifier {
+        Commands::DeployEvmDataAttestation {
             data,
             settings_path,
             sol_code_path,
             rpc_url,
             addr_path,
             optimizer_runs,
+            private_key,
         } => {
             deploy_da_evm(
                 data,
@@ -317,16 +323,17 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 rpc_url,
                 addr_path,
                 optimizer_runs,
+                private_key,
             )
             .await
         }
         #[cfg(not(target_arch = "wasm32"))]
         Commands::VerifyEVM {
             proof_path,
-            addr,
+            addr_verifier,
             rpc_url,
-            data_attestation,
-        } => verify_evm(proof_path, addr, rpc_url, data_attestation).await,
+            addr_da,
+        } => verify_evm(proof_path, addr_verifier, rpc_url, addr_da).await,
         Commands::PrintProofHex { proof_path } => print_proof_hex(proof_path),
     }
 }
@@ -611,7 +618,7 @@ pub(crate) async fn calibrate(
                     let found_run_args = RunArgs {
                         input_scale: settings.run_args.input_scale,
                         param_scale: settings.run_args.param_scale,
-                        bits: settings.run_args.bits,
+                        lookup_range: settings.run_args.lookup_range,
                         logrows: settings.run_args.logrows,
                         scale_rebase_multiplier: settings.run_args.scale_rebase_multiplier,
                         ..run_args.clone()
@@ -621,6 +628,7 @@ pub(crate) async fn calibrate(
                         run_args: found_run_args,
                         required_lookups: settings.required_lookups,
                         model_output_scales: settings.model_output_scales,
+                        model_input_scales: settings.model_input_scales,
                         num_constraints: settings.num_constraints,
                         total_const_size: settings.total_const_size,
                         ..original_settings.clone()
@@ -642,13 +650,25 @@ pub(crate) async fn calibrate(
         std::mem::drop(_r);
         std::mem::drop(_q);
 
-        if let Some(best) = res.into_iter().max_by_key(|p| {
+        let max_lookup_range = res
+            .iter()
+            .map(|x| x.run_args.lookup_range.1)
+            .max()
+            .unwrap_or(0);
+        let min_lookup_range = res
+            .iter()
+            .map(|x| x.run_args.lookup_range.0)
+            .min()
+            .unwrap_or(0);
+
+        if let Some(mut best) = res.into_iter().max_by_key(|p| {
             (
-                p.run_args.bits,
+                p.run_args.logrows,
                 p.run_args.input_scale,
                 p.run_args.param_scale,
             )
         }) {
+            best.run_args.lookup_range = (min_lookup_range, max_lookup_range);
             // pick the one with the largest logrows
             found_params.push(best.clone());
             debug!(
@@ -726,6 +746,11 @@ pub(crate) async fn calibrate(
     };
 
     if matches!(target, CalibrationTarget::Resources { col_overflow: true }) {
+        let lookup_log_rows = ((best_params.run_args.lookup_range.1
+            - best_params.run_args.lookup_range.0) as f32)
+            .log2()
+            .ceil() as u32
+            + 1;
         let mut reduction = std::cmp::max(
             (best_params
                 .model_instance_shapes
@@ -735,7 +760,7 @@ pub(crate) async fn calibrate(
                 .log2()
                 .ceil() as u32
                 + 1,
-            best_params.run_args.bits as u32,
+            lookup_log_rows,
         );
         reduction = std::cmp::max(reduction, crate::graph::MIN_LOGROWS);
 
@@ -789,13 +814,6 @@ pub(crate) fn print_proof_hex(proof_path: PathBuf) -> Result<(), Box<dyn Error>>
     info!("{}", hex::encode(proof.proof));
     Ok(())
 }
-/// helper function to generate the deployment code from yul code
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn gen_deployment_code(yul_code: YulCode) -> Result<DeploymentCode, Box<dyn Error>> {
-    Ok(DeploymentCode {
-        code: evm::compile_yul(&yul_code),
-    })
-}
 
 #[cfg(feature = "render")]
 pub(crate) fn render(model: PathBuf, output: PathBuf, args: RunArgs) -> Result<(), Box<dyn Error>> {
@@ -834,18 +852,21 @@ pub(crate) fn create_evm_verifier(
     let vk = load_vk::<KZGCommitmentScheme<Bn256>, Fr, GraphCircuit>(vk_path, circuit_settings)?;
     trace!("params computed");
 
-    let yul_code: YulCode = gen_evm_verifier(&params, &vk, num_instance)?;
+    let generator = halo2_solidity_verifier::SolidityGenerator::new(
+        &params,
+        &vk,
+        halo2_solidity_verifier::BatchOpenScheme::Bdfg21,
+        num_instance,
+    );
+    let verifier_solidity = generator.render().unwrap();
 
-    let mut f = File::create(sol_code_path.clone())?;
-    let _ = f.write(yul_code.as_bytes());
-
-    let output = fix_verifier_sol(sol_code_path.clone(), num_instance as u32, None, None)?;
-
-    let mut f = File::create(sol_code_path.clone())?;
-    let _ = f.write(output.as_bytes());
+    File::create(sol_code_path.clone())
+        .unwrap()
+        .write_all(verifier_solidity.as_bytes())
+        .unwrap();
 
     // fetch abi of the contract
-    let (abi, _, _) = get_contract_artifacts(sol_code_path, "Verifier", None)?;
+    let (abi, _, _) = get_contract_artifacts(sol_code_path, "Halo2Verifier", 0)?;
     // save abi to file
     serde_json::to_writer(std::fs::File::create(abi_path)?, &abi)?;
 
@@ -853,7 +874,7 @@ pub(crate) fn create_evm_verifier(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn create_evm_data_attestation_verifier(
+pub(crate) fn create_evm_data_attestation(
     vk_path: PathBuf,
     srs_path: PathBuf,
     settings_path: PathBuf,
@@ -903,22 +924,17 @@ pub(crate) fn create_evm_data_attestation_verifier(
         for call in source.calls {
             on_chain_input_data.push(call);
         }
-        Some((settings.run_args.input_scale, on_chain_input_data))
+        Some(on_chain_input_data)
     } else {
         None
     };
 
     if input_data.is_some() || output_data.is_some() {
-        let output = fix_verifier_sol(
-            sol_code_path.clone(),
-            num_instance as u32,
-            input_data,
-            output_data,
-        )?;
+        let output = fix_da_sol(input_data, output_data)?;
         let mut f = File::create(sol_code_path.clone())?;
         let _ = f.write(output.as_bytes());
         // fetch abi of the contract
-        let (abi, _, _) = get_contract_artifacts(sol_code_path, "DataAttestationVerifier", None)?;
+        let (abi, _, _) = get_contract_artifacts(sol_code_path, "DataAttestation", 0)?;
         // save abi to file
         serde_json::to_writer(std::fs::File::create(abi_path)?, &abi)?;
     } else {
@@ -936,7 +952,8 @@ pub(crate) async fn deploy_da_evm(
     sol_code_path: PathBuf,
     rpc_url: Option<String>,
     addr_path: PathBuf,
-    runs: Option<usize>,
+    runs: usize,
+    private_key: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     check_solc_requirement();
     let contract_address = deploy_da_verifier_via_solidity(
@@ -945,6 +962,7 @@ pub(crate) async fn deploy_da_evm(
         sol_code_path,
         rpc_url.as_deref(),
         runs,
+        private_key.as_deref(),
     )
     .await?;
     info!("Contract deployed at: {}", contract_address);
@@ -960,11 +978,17 @@ pub(crate) async fn deploy_evm(
     sol_code_path: PathBuf,
     rpc_url: Option<String>,
     addr_path: PathBuf,
-    runs: Option<usize>,
+    runs: usize,
+    private_key: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     check_solc_requirement();
-    let contract_address =
-        deploy_verifier_via_solidity(sol_code_path, rpc_url.as_deref(), runs).await?;
+    let contract_address = deploy_verifier_via_solidity(
+        sol_code_path,
+        rpc_url.as_deref(),
+        runs,
+        private_key.as_deref(),
+    )
+    .await?;
 
     info!("Contract deployed at: {:#?}", contract_address);
 
@@ -976,19 +1000,25 @@ pub(crate) async fn deploy_evm(
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn verify_evm(
     proof_path: PathBuf,
-    addr: H160,
+    addr_verifier: H160,
     rpc_url: Option<String>,
-    uses_data_attestation: bool,
+    addr_da: Option<H160>,
 ) -> Result<(), Box<dyn Error>> {
     use crate::eth::verify_proof_with_data_attestation;
     check_solc_requirement();
 
     let proof = Snark::load::<KZGCommitmentScheme<Bn256>>(&proof_path)?;
 
-    let result = if !uses_data_attestation {
-        verify_proof_via_solidity(proof.clone(), addr, rpc_url.as_deref()).await?
+    let result = if let Some(addr_da) = addr_da {
+        verify_proof_with_data_attestation(
+            proof.clone(),
+            addr_verifier,
+            addr_da,
+            rpc_url.as_deref(),
+        )
+        .await?
     } else {
-        verify_proof_with_data_attestation(proof.clone(), addr, rpc_url.as_deref()).await?
+        verify_proof_via_solidity(proof.clone(), addr_verifier, rpc_url.as_deref()).await?
     };
 
     info!("Solidity verification result: {}", result);
@@ -1014,39 +1044,41 @@ pub(crate) fn create_evm_aggregate_verifier(
         .map(|path| GraphSettings::load(path).unwrap())
         .collect::<Vec<_>>();
 
-    let num_public_inputs: usize = settings
+    let num_instance: usize = settings
         .iter()
         .map(|s| s.total_instances().iter().sum::<usize>())
         .sum();
 
+    let num_instance = AggregationCircuit::num_instance(num_instance);
+    assert_eq!(num_instance.len(), 1);
+    let num_instance = num_instance[0];
+
     let agg_vk = load_vk::<KZGCommitmentScheme<Bn256>, Fr, AggregationCircuit>(vk_path, ())?;
 
-    let yul_code = gen_aggregation_evm_verifier(
+    let mut generator = halo2_solidity_verifier::SolidityGenerator::new(
         &params,
         &agg_vk,
-        AggregationCircuit::num_instance(num_public_inputs),
-        AggregationCircuit::accumulator_indices(),
-    )?;
+        halo2_solidity_verifier::BatchOpenScheme::Bdfg21,
+        num_instance,
+    );
 
-    let mut f = File::create(sol_code_path.clone())?;
-    let _ = f.write(yul_code.as_bytes());
+    let acc_encoding = halo2_solidity_verifier::AccumulatorEncoding::new(
+        0,
+        AggregationCircuit::num_limbs(),
+        AggregationCircuit::num_bits(),
+    );
 
-    let output = fix_verifier_sol(
-        sol_code_path.clone(),
-        AggregationCircuit::num_instance(num_public_inputs)
-            .iter()
-            .sum::<usize>()
-            .try_into()
-            .unwrap(),
-        None,
-        None,
-    )?;
+    generator = generator.set_acc_encoding(Some(acc_encoding));
 
-    let mut f = File::create(sol_code_path.clone())?;
-    let _ = f.write(output.as_bytes());
+    let verifier_solidity = generator.render().unwrap();
+
+    File::create(sol_code_path.clone())
+        .unwrap()
+        .write_all(verifier_solidity.as_bytes())
+        .unwrap();
 
     // fetch abi of the contract
-    let (abi, _, _) = get_contract_artifacts(sol_code_path, "Verifier", None)?;
+    let (abi, _, _) = get_contract_artifacts(sol_code_path, "Halo2Verifier", 0)?;
     // save abi to file
     serde_json::to_writer(std::fs::File::create(abi_path)?, &abi)?;
 
@@ -1381,65 +1413,6 @@ pub(crate) async fn fuzz(
     };
 
     run_fuzz_fn(num_runs, fuzz_proof_instances, &passed);
-
-    if matches!(transcript, TranscriptType::EVM) {
-        let num_instance = circuit.settings().total_instances();
-        let num_instance: usize = num_instance.iter().sum::<usize>();
-
-        let yul_code = gen_evm_verifier(&params, pk.get_vk(), num_instance)?;
-        let deployment_code = gen_deployment_code(yul_code).unwrap();
-
-        info!("fuzzing proof bytes for evm verifier");
-
-        let fuzz_evm_proof_bytes = || {
-            let mut rng = rand::thread_rng();
-
-            let bad_proof_bytes: Vec<u8> = (0..proof.proof.len())
-                .map(|_| rng.gen_range(0..20))
-                .collect();
-
-            let bad_proof = Snark::<_, _> {
-                instances: proof.instances.clone(),
-                proof: bad_proof_bytes,
-                protocol: proof.protocol.clone(),
-                transcript_type: transcript,
-            };
-
-            let res = evm_verify(deployment_code.clone(), bad_proof);
-
-            match res {
-                Ok(_) => Ok(()),
-                Err(_) => Err(()),
-            }
-        };
-
-        run_fuzz_fn(num_runs, fuzz_evm_proof_bytes, &passed);
-
-        info!("fuzzing proof instances for evm verifier");
-
-        let fuzz_evm_instances = || {
-            let mut bad_inputs = vec![];
-            for l in &proof.instances {
-                bad_inputs.push(vec![Fr::random(rand::rngs::OsRng); l.len()]);
-            }
-
-            let bad_proof = Snark::<_, _> {
-                instances: bad_inputs.clone(),
-                proof: proof.proof.clone(),
-                protocol: proof.protocol.clone(),
-                transcript_type: transcript,
-            };
-
-            let res = evm_verify(deployment_code.clone(), bad_proof);
-
-            match res {
-                Ok(_) => Ok(()),
-                Err(_) => Err(()),
-            }
-        };
-
-        run_fuzz_fn(num_runs, fuzz_evm_instances, &passed);
-    }
 
     if !passed.into_inner() {
         Err("fuzzing failed".into())

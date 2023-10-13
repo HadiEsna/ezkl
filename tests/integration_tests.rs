@@ -3,6 +3,7 @@
 mod native_tests {
 
     use core::panic;
+    // use ezkl::circuit::table::RESERVED_BLINDING_ROWS_PAD;
     use ezkl::graph::input::{FileSource, GraphData};
     use ezkl::graph::{DataSource, GraphSettings, Visibility};
     use lazy_static::lazy_static;
@@ -23,6 +24,8 @@ mod native_tests {
             var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".to_string());
         static ref ANVIL_URL: String = "http://localhost:3030".to_string();
         static ref LIMITLESS_ANVIL_URL: String = "http://localhost:8545".to_string();
+        static ref ANVIL_DEFAULT_PRIVATE_KEY: String =
+            "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string();
     }
 
     fn start_anvil(limitless: bool) -> Child {
@@ -188,7 +191,7 @@ mod native_tests {
         "1l_prelu",
     ];
 
-    const TESTS: [&str; 60] = [
+    const TESTS: [&str; 61] = [
         "1l_mlp",
         "1l_slice",
         "1l_concat",
@@ -252,6 +255,7 @@ mod native_tests {
         "1l_powf",
         "scatter_elements",
         "1l_linear", //60
+        "linear_regression",
     ];
 
     const WASM_TESTS: [&str; 48] = [
@@ -438,7 +442,7 @@ mod native_tests {
             use crate::native_tests::mock;
             use crate::native_tests::accuracy_measurement;
             use crate::native_tests::kzg_prove_and_verify;
-            use crate::native_tests::wasm_tests;
+            use crate::native_tests::run_js_tests;
             use crate::native_tests::kzg_fuzz;
             use crate::native_tests::render_circuit;
             use crate::native_tests::model_serialization;
@@ -481,7 +485,7 @@ mod native_tests {
 
 
 
-            seq!(N in 0..=59 {
+            seq!(N in 0..=60 {
             #(#[test_case(TESTS[N])])*
             fn model_serialization_(test: &str) {
                 let test_dir = TempDir::new(test).unwrap();
@@ -763,7 +767,7 @@ mod native_tests {
                 crate::native_tests::init_binary();
                 let test_dir = TempDir::new(test).unwrap();
                 let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
-                kzg_fuzz(path, test.to_string(), 7, 16, 17, "evm");
+                kzg_fuzz(path, test.to_string(), "evm");
                 test_dir.close().unwrap();
             }
 
@@ -779,7 +783,7 @@ mod native_tests {
                     env_logger::init();
                     let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
                     kzg_prove_and_verify(path, test.to_string(), "safe", "private", "private", "public", Some(vec![0,1]), true);
-                    wasm_tests(path, test.to_string());
+                    run_js_tests(path, test.to_string(), "testWasm");
                     test_dir.close().unwrap();
                 }
 
@@ -791,7 +795,7 @@ mod native_tests {
                     env_logger::init();
                     let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
                     kzg_prove_and_verify(path, test.to_string(), "safe", "private", "fixed", "public", Some(vec![0,1]), true);
-                    wasm_tests(path, test.to_string());
+                    run_js_tests(path, test.to_string(), "testWasm");
                     test_dir.close().unwrap();
                 }
 
@@ -832,6 +836,7 @@ mod native_tests {
             use crate::native_tests::TESTS_EVM_AGGR;
             use test_case::test_case;
             use crate::native_tests::kzg_evm_prove_and_verify;
+            use crate::native_tests::run_js_tests;
             use crate::native_tests::kzg_evm_on_chain_input_prove_and_verify;
             use crate::native_tests::kzg_evm_aggr_prove_and_verify;
             use crate::native_tests::kzg_fuzz;
@@ -928,10 +933,23 @@ mod native_tests {
                     let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
                     let _anvil_child = crate::native_tests::start_anvil(false);
                     kzg_evm_prove_and_verify(path, test.to_string(), "private", "private", "public");
+                    run_js_tests(path, test.to_string(), "testBrowserEvmVerify");
                     test_dir.close().unwrap();
 
                 }
 
+                #[test]
+                #[ignore]
+                fn kzg_evm_prove_and_verify_encrypted_input_() {
+                    let test = "1l_mlp";
+                    crate::native_tests::init_binary();
+                    let test_dir = TempDir::new(test).unwrap();
+                    let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
+                    let _anvil_child = crate::native_tests::start_anvil(false);
+                    kzg_evm_prove_and_verify(path, test.to_string(), "encrypted", "private", "public");
+                    run_js_tests(path, test.to_string(), "testBrowserEvmVerify");
+                    test_dir.close().unwrap();
+                }
 
                 #(#[test_case(TESTS_EVM[N])])*
                 fn kzg_evm_hashed_input_prove_and_verify_(test: &str) {
@@ -940,6 +958,7 @@ mod native_tests {
                     let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
                     let mut _anvil_child = crate::native_tests::start_anvil(false);
                     kzg_evm_prove_and_verify(path, test.to_string(), "hashed", "private", "private");
+                    run_js_tests(path, test.to_string(), "testBrowserEvmVerify");
                     test_dir.close().unwrap();
                 }
 
@@ -950,6 +969,7 @@ mod native_tests {
                     let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
                     let _anvil_child = crate::native_tests::start_anvil(false);
                     kzg_evm_prove_and_verify(path, test.to_string(), "private", "hashed", "public");
+                    run_js_tests(path, test.to_string(), "testBrowserEvmVerify");
                     test_dir.close().unwrap();
 
                 }
@@ -961,8 +981,8 @@ mod native_tests {
                     let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
                     let _anvil_child = crate::native_tests::start_anvil(false);
                     kzg_evm_prove_and_verify(path, test.to_string(), "private", "private", "hashed");
+                    run_js_tests(path, test.to_string(), "testBrowserEvmVerify");
                     test_dir.close().unwrap();
-
                 }
 
 
@@ -972,13 +992,10 @@ mod native_tests {
                     let test_dir = TempDir::new(test).unwrap();
                     let path = test_dir.path().to_str().unwrap(); crate::native_tests::mv_test_(test_dir.path().to_str().unwrap(), test);
                     let _anvil_child = crate::native_tests::start_anvil(false);
-                    kzg_fuzz(path, test.to_string(), 7, 16, 17, "evm");
+                    kzg_fuzz(path, test.to_string(), "evm");
                     test_dir.close().unwrap();
 
                 }
-
-
-
             });
     }
     };
@@ -1287,6 +1304,15 @@ mod native_tests {
             .expect("failed to execute process");
         assert!(status.success());
 
+        // let settings_path = format!("{}/{}/settings.json", test_dir, example_name);
+        // // bump bits by 1 to test for overflow
+        // let mut settings = GraphSettings::load(&settings_path.clone().into()).unwrap();
+
+        // let rows = 2u32.pow(settings.run_args.logrows - 1) - 2 * RESERVED_BLINDING_ROWS_PAD as u32;
+
+        // settings.run_args.lookup_range = (-(rows as i128), rows as i128);
+        // settings.save(&settings_path.into()).unwrap();
+
         let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
             .args([
                 "compile-circuit",
@@ -1437,7 +1463,7 @@ mod native_tests {
                 format!("{}/{}/network.onnx", test_dir, example_name).as_str(),
                 "-O",
                 format!("{}/{}/render.png", test_dir, example_name).as_str(),
-                "--bits=16",
+                "--lookup-range=(-32768,32768)",
                 "-K=17",
             ])
             .status()
@@ -1453,7 +1479,7 @@ mod native_tests {
                 "-M",
                 format!("{}/tutorial/network.onnx", test_dir).as_str(),
                 &format!("--settings-path={}/tutorial/settings.json", test_dir),
-                "--bits=16",
+                "--lookup-range=(-32768,32768)",
                 "--logrows=17",
                 "--input-scale=4",
                 "--param-scale=4",
@@ -1514,8 +1540,6 @@ mod native_tests {
                     "--settings-path={}/{}/settings.json",
                     test_dir, example_name
                 ),
-                "--bits=2",
-                "-K=3",
             ])
             .status()
             .expect("failed to execute process");
@@ -1624,8 +1648,6 @@ mod native_tests {
                     "--settings-path={}/{}/settings.json",
                     test_dir, example_name
                 ),
-                "--bits=2",
-                "-K=3",
             ])
             .status()
             .expect("failed to execute process");
@@ -1913,6 +1935,7 @@ mod native_tests {
         let addr_path_arg = format!("--addr-path={}/{}/addr.txt", test_dir, example_name);
         let rpc_arg = format!("--rpc-url={}", *ANVIL_URL);
         let settings_arg = format!("{}/{}/settings.json", test_dir, example_name);
+        let private_key = format!("--private-key={}", *ANVIL_DEFAULT_PRIVATE_KEY);
 
         let base_args = vec![
             "create-evm-verifier-aggr",
@@ -1938,6 +1961,7 @@ mod native_tests {
             addr_path_arg.as_str(),
             "--sol-code-path",
             sol_arg.as_str(),
+            private_key.as_str(),
         ];
 
         let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
@@ -1950,7 +1974,7 @@ mod native_tests {
         let addr = std::fs::read_to_string(format!("{}/{}/addr.txt", test_dir, example_name))
             .expect("failed to read address file");
 
-        let deployed_addr_arg = format!("--addr={}", addr);
+        let deployed_addr_arg = format!("--addr-verifier={}", addr);
 
         let pf_arg = format!("{}/{}/evm_aggr.pf", test_dir, example_name);
 
@@ -2118,30 +2142,8 @@ mod native_tests {
         assert!(status.success());
     }
 
-    // run js wasm tests for a given example
-    fn wasm_tests(test_dir: &str, example_name: String) {
-        let status = Command::new("pnpm")
-            .args([
-                "run",
-                "test",
-                "testWasm",
-                &format!("--example={}", example_name),
-                &format!("--dir={}", test_dir),
-            ])
-            .status()
-            .expect("failed to execute process");
-        assert!(status.success());
-    }
-
     // prove-serialize-verify, the usual full path
-    fn kzg_fuzz(
-        test_dir: &str,
-        example_name: String,
-        scale: usize,
-        bits: usize,
-        logrows: usize,
-        transcript: &str,
-    ) {
+    fn kzg_fuzz(test_dir: &str, example_name: String, transcript: &str) {
         let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
             .args([
                 "gen-settings",
@@ -2149,10 +2151,23 @@ mod native_tests {
                 format!("{}/{}/network.onnx", test_dir, example_name).as_str(),
                 "-O",
                 format!("{}/{}/settings_fuzz.json", test_dir, example_name).as_str(),
-                &format!("--input-scale={}", scale),
-                &format!("--param-scale={}", scale),
-                &format!("--bits={}", bits),
-                &format!("--logrows={}", logrows),
+            ])
+            .status()
+            .expect("failed to execute process");
+        assert!(status.success());
+
+        let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
+            .args([
+                "calibrate-settings",
+                "--data",
+                format!("{}/{}/input.json", test_dir, example_name).as_str(),
+                "-M",
+                format!("{}/{}/network.onnx", test_dir, example_name).as_str(),
+                format!(
+                    "--settings-path={}/{}/settings_fuzz.json",
+                    test_dir, example_name
+                )
+                .as_str(),
             ])
             .status()
             .expect("failed to execute process");
@@ -2350,7 +2365,7 @@ mod native_tests {
         let addr = std::fs::read_to_string(format!("{}/{}/addr.txt", test_dir, example_name))
             .expect("failed to read address file");
 
-        let deployed_addr_arg = format!("--addr={}", addr);
+        let deployed_addr_arg = format!("--addr-verifier={}", addr);
 
         // now verify the proof
         let pf_arg = format!("{}/{}/proof.pf", test_dir, example_name);
@@ -2376,6 +2391,21 @@ mod native_tests {
         assert!(!status.success());
     }
 
+    // run js browser evm verify tests for a given example
+    fn run_js_tests(test_dir: &str, example_name: String, js_test: &str) {
+        let status = Command::new("pnpm")
+            .args([
+                "run",
+                "test",
+                js_test,
+                &format!("--example={}", example_name),
+                &format!("--dir={}", test_dir),
+            ])
+            .status()
+            .expect("failed to execute process");
+        assert!(status.success());
+    }
+
     fn kzg_evm_on_chain_input_prove_and_verify(
         test_dir: &str,
         example_name: String,
@@ -2397,7 +2427,7 @@ mod native_tests {
                 &format!("--input-visibility={}", input_visbility),
                 &format!("--output-visibility={}", output_visbility),
                 "--param-visibility=private",
-                "--bits=16",
+                "--lookup-range=(-32768,32768)",
                 "-K=17",
             ])
             .status()
@@ -2411,6 +2441,7 @@ mod native_tests {
         let witness_path = format!("{}/{}/witness.json", test_dir, example_name);
         let test_on_chain_data_path = format!("{}/{}/on_chain_input.json", test_dir, example_name);
         let rpc_arg = format!("--rpc-url={}", LIMITLESS_ANVIL_URL.as_str());
+        let private_key = format!("--private-key={}", *ANVIL_DEFAULT_PRIVATE_KEY);
 
         let test_input_source = format!("--input-source={}", input_source);
         let test_output_source = format!("--output-source={}", output_source);
@@ -2496,12 +2527,55 @@ mod native_tests {
 
         let vk_arg = format!("{}/{}/key.vk", test_dir, example_name);
 
+        let settings_arg = format!("--settings-path={}", settings_path);
+
+        // create the verifier
+        let mut args = vec![
+            "create-evm-verifier",
+            &srs_path,
+            "--vk-path",
+            &vk_arg,
+            &settings_arg,
+        ];
+
+        let sol_arg = format!("{}/{}/kzg.sol", test_dir, example_name);
+
+        args.push("--sol-code-path");
+        args.push(sol_arg.as_str());
+
+        let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
+            .args(&args)
+            .status()
+            .expect("failed to execute process");
+        assert!(status.success());
+
+        let addr_path_verifier_arg = format!(
+            "--addr-path={}/{}/addr_verifier.txt",
+            test_dir, example_name
+        );
+
+        // deploy the verifier
+        let mut args = vec![
+            "deploy-evm-verifier",
+            rpc_arg.as_str(),
+            addr_path_verifier_arg.as_str(),
+        ];
+
+        args.push("--sol-code-path");
+        args.push(sol_arg.as_str());
+
+        let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
+            .args(&args)
+            .status()
+            .expect("failed to execute process");
+        assert!(status.success());
+
         let sol_arg = format!("{}/{}/kzg.sol", test_dir, example_name);
 
         let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
             .args([
-                "create-evm-da-verifier",
-                format!("--settings-path={}", settings_path).as_str(),
+                "create-evm-da",
+                &settings_arg,
                 "--sol-code-path",
                 sol_arg.as_str(),
                 &srs_path,
@@ -2514,36 +2588,43 @@ mod native_tests {
             .expect("failed to execute process");
         assert!(status.success());
 
-        let addr_path_arg = format!("--addr-path={}/{}/addr.txt", test_dir, example_name);
+        let addr_path_da_arg = format!("--addr-path={}/{}/addr_da.txt", test_dir, example_name);
         let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
             .args([
-                "deploy-evm-da-verifier",
+                "deploy-evm-da",
                 format!("--settings-path={}", settings_path).as_str(),
                 "-D",
                 test_on_chain_data_path.as_str(),
                 "--sol-code-path",
                 sol_arg.as_str(),
                 rpc_arg.as_str(),
-                addr_path_arg.as_str(),
+                addr_path_da_arg.as_str(),
+                private_key.as_str(),
             ])
             .status()
             .expect("failed to execute process");
         assert!(status.success());
 
         let pf_arg = format!("{}/{}/proof.pf", test_dir, example_name);
-        let uses_data_attestation = "--data-attestation".to_string();
-        // read in the address
-        let addr = std::fs::read_to_string(format!("{}/{}/addr.txt", test_dir, example_name))
+        // read in the verifier address
+        let addr_verifier =
+            std::fs::read_to_string(format!("{}/{}/addr_verifier.txt", test_dir, example_name))
+                .expect("failed to read address file");
+
+        let deployed_addr_verifier_arg = format!("--addr-verifier={}", addr_verifier);
+
+        // read in the da address
+        let addr_da = std::fs::read_to_string(format!("{}/{}/addr_da.txt", test_dir, example_name))
             .expect("failed to read address file");
 
-        let deployed_addr_arg = format!("--addr={}", addr);
+        let deployed_addr_da_arg = format!("--addr-da={}", addr_da);
 
         let args = vec![
             "verify-evm",
             "--proof-path",
             pf_arg.as_str(),
-            deployed_addr_arg.as_str(),
-            uses_data_attestation.as_str(),
+            deployed_addr_verifier_arg.as_str(),
+            deployed_addr_da_arg.as_str(),
             rpc_arg.as_str(),
         ];
         let status = Command::new(format!("{}/release/ezkl", *CARGO_TARGET_DIR))
@@ -2569,6 +2650,8 @@ mod native_tests {
             .expect("failed to execute process");
 
         assert!(status.success());
+
+        let deployed_addr_arg = format!("--addr={}", addr_da);
 
         let mut args = vec![
             "test-update-account-calls",

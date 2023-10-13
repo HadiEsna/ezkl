@@ -23,7 +23,8 @@ use self::modules::{
 };
 use crate::circuit::lookup::LookupOp;
 use crate::circuit::modules::ModulePlanner;
-use crate::circuit::CheckMode;
+use crate::circuit::table::{Table, RANGE_MULTIPLIER, RESERVED_BLINDING_ROWS_PAD};
+use crate::circuit::{CheckMode, InputType};
 use crate::tensor::{Tensor, ValTensor};
 use crate::RunArgs;
 use halo2_proofs::{
@@ -99,7 +100,7 @@ pub enum GraphError {
     PackingExponent,
 }
 
-const ASSUMED_BLINDING_FACTORS: usize = 7;
+const ASSUMED_BLINDING_FACTORS: usize = 5;
 /// The minimum number of rows in the grid
 pub const MIN_LOGROWS: u32 = 4;
 
@@ -129,6 +130,8 @@ pub struct GraphWitness {
     pub processed_outputs: Option<ModuleForwardResult>,
     /// max lookup input
     pub max_lookup_inputs: i128,
+    /// max lookup input
+    pub min_lookup_inputs: i128,
 }
 
 impl GraphWitness {
@@ -141,6 +144,7 @@ impl GraphWitness {
             processed_params: None,
             processed_outputs: None,
             max_lookup_inputs: 0,
+            min_lookup_inputs: 0,
         }
     }
     /// Export the ezkl witness as json
@@ -311,6 +315,8 @@ pub struct GraphSettings {
     pub model_instance_shapes: Vec<Vec<usize>>,
     /// model output scales
     pub model_output_scales: Vec<u32>,
+    /// model input scales
+    pub model_input_scales: Vec<u32>,
     /// the of instance cells used by modules
     pub module_sizes: ModuleSizes,
     /// required_lookups
@@ -619,7 +625,8 @@ impl GraphCircuit {
     ) -> Result<Vec<Tensor<Fp>>, Box<dyn std::error::Error>> {
         let shapes = self.model().graph.input_shapes();
         let scales = self.model().graph.get_input_scales();
-        self.process_data_source(&data.input_data, shapes, scales)
+        let input_types = self.model().graph.get_input_types();
+        self.process_data_source(&data.input_data, shapes, scales, input_types)
     }
 
     ///
@@ -630,8 +637,10 @@ impl GraphCircuit {
     ) -> Result<Vec<Tensor<Fp>>, Box<dyn std::error::Error>> {
         let shapes = self.model().graph.input_shapes();
         let scales = self.model().graph.get_input_scales();
+        let input_types = self.model().graph.get_input_types();
         info!("input scales: {:?}", scales);
-        self.process_data_source(&data.input_data, shapes, scales)
+
+        self.process_data_source(&data.input_data, shapes, scales, input_types)
             .await
     }
 
@@ -642,9 +651,12 @@ impl GraphCircuit {
         data: &DataSource,
         shapes: Vec<Vec<usize>>,
         scales: Vec<u32>,
+        input_types: Vec<InputType>,
     ) -> Result<Vec<Tensor<Fp>>, Box<dyn std::error::Error>> {
         match &data {
-            DataSource::File(file_data) => self.load_file_data(file_data, &shapes, scales),
+            DataSource::File(file_data) => {
+                self.load_file_data(file_data, &shapes, scales, input_types)
+            }
             DataSource::OnChain(_) => {
                 panic!("Cannot use non-file data source as input for wasm rn.")
             }
@@ -658,6 +670,7 @@ impl GraphCircuit {
         data: &DataSource,
         shapes: Vec<Vec<usize>>,
         scales: Vec<u32>,
+        input_types: Vec<InputType>,
     ) -> Result<Vec<Tensor<Fp>>, Box<dyn std::error::Error>> {
         match &data {
             DataSource::OnChain(source) => {
@@ -668,10 +681,12 @@ impl GraphCircuit {
                 self.load_on_chain_data(source.clone(), &shapes, per_item_scale)
                     .await
             }
-            DataSource::File(file_data) => self.load_file_data(file_data, &shapes, scales),
+            DataSource::File(file_data) => {
+                self.load_file_data(file_data, &shapes, scales, input_types)
+            }
             DataSource::DB(pg) => {
                 let data = pg.fetch_and_format_as_file()?;
-                self.load_file_data(&data, &shapes, scales)
+                self.load_file_data(&data, &shapes, scales, input_types)
             }
         }
     }
@@ -685,7 +700,7 @@ impl GraphCircuit {
         scales: Vec<u32>,
     ) -> Result<Vec<Tensor<Fp>>, Box<dyn std::error::Error>> {
         use crate::eth::{evm_quantize, read_on_chain_inputs, setup_eth_backend};
-        let (_, client) = setup_eth_backend(Some(&source.rpc)).await?;
+        let (_, client) = setup_eth_backend(Some(&source.rpc), None).await?;
         let inputs = read_on_chain_inputs(client.clone(), client.address(), &source.calls).await?;
         // quantize the supplied data using the provided scale + QuantizeData.sol
         let quantized_evm_inputs = evm_quantize(
@@ -711,11 +726,24 @@ impl GraphCircuit {
         file_data: &FileSource,
         shapes: &Vec<Vec<usize>>,
         scales: Vec<u32>,
+        input_types: Vec<InputType>,
     ) -> Result<Vec<Tensor<Fp>>, Box<dyn std::error::Error>> {
         // quantize the supplied data using the provided scale.
         let mut data: Vec<Tensor<Fp>> = vec![];
-        for ((d, shape), scale) in file_data.iter().zip(shapes).zip(scales) {
-            let t: Vec<Fp> = d.par_iter().map(|x| x.to_field(scale)).collect();
+        for (((d, shape), scale), input_type) in file_data
+            .iter()
+            .zip(shapes)
+            .zip(scales)
+            .zip(input_types.iter())
+        {
+            let t: Vec<Fp> = d
+                .par_iter()
+                .map(|x| {
+                    let mut x = x.clone();
+                    x.as_type(input_type);
+                    x.to_field(scale)
+                })
+                .collect();
 
             let mut t: Tensor<Fp> = t.into_iter().into();
             t.reshape(shape);
@@ -741,22 +769,42 @@ impl GraphCircuit {
         Ok(data)
     }
 
-    fn calc_min_logrows(
-        &mut self,
-        res: &GraphWitness,
-        blinding_offset: f64,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let reserved_blinding_rows = (ASSUMED_BLINDING_FACTORS + 1) as f32;
+    fn reserved_blinding_rows() -> f64 {
+        (ASSUMED_BLINDING_FACTORS + RESERVED_BLINDING_ROWS_PAD) as f64
+    }
 
-        let min_bits = (res.max_lookup_inputs as f64 + blinding_offset)
+    fn calc_safe_range(res: &GraphWitness) -> (i128, i128) {
+        (
+            RANGE_MULTIPLIER * res.min_lookup_inputs,
+            RANGE_MULTIPLIER * res.max_lookup_inputs,
+        )
+    }
+
+    fn calc_min_logrows(&mut self, res: &GraphWitness) -> Result<(), Box<dyn std::error::Error>> {
+        let reserved_blinding_rows = Self::reserved_blinding_rows();
+        let safe_range = Self::calc_safe_range(res);
+
+        let max_col_size =
+            Table::<Fp>::cal_col_size(MAX_PUBLIC_SRS as usize, reserved_blinding_rows as usize);
+        let num_cols = Table::<Fp>::num_cols_required(safe_range, max_col_size);
+
+        if num_cols > 1 {
+            let err_string = format!(
+                "No possible lookup range can accomodate max value min and max value ({}, {})",
+                safe_range.0, safe_range.1
+            );
+            return Err(err_string.into());
+        }
+
+        let min_bits = ((safe_range.1 - safe_range.0) as f64 + reserved_blinding_rows + 1.)
             .log2()
-            .ceil() as usize
-            + 1;
+            .ceil() as usize;
 
-        let min_rows_from_constraints = (self.settings().num_constraints as f32
+        let min_rows_from_constraints = (self.settings().num_constraints as f64
             + reserved_blinding_rows)
             .log2()
             .ceil() as usize;
+
         let mut logrows = std::cmp::max(min_bits, min_rows_from_constraints);
 
         // if public input then public inputs col will have public inputs len
@@ -768,7 +816,7 @@ impl GraphCircuit {
                 .instance_shapes()
                 .iter()
                 .fold(0, |acc, x| std::cmp::max(acc, x.iter().product::<usize>()))
-                as f32
+                as f64
                 + reserved_blinding_rows;
             // if there are modules then we need to add the max module size
             if self.settings().uses_modules() {
@@ -777,7 +825,7 @@ impl GraphCircuit {
                     .module_sizes
                     .num_instances()
                     .iter()
-                    .sum::<usize>() as f32;
+                    .sum::<usize>() as f64;
             }
             let instance_len_logrows = (max_instance_len).log2().ceil() as usize;
             logrows = std::cmp::max(logrows, instance_len_logrows);
@@ -789,7 +837,7 @@ impl GraphCircuit {
         logrows = std::cmp::min(logrows, MAX_PUBLIC_SRS as usize);
         let model = self.model().clone();
         let settings_mut = self.settings_mut();
-        settings_mut.run_args.bits = min_bits;
+        settings_mut.run_args.lookup_range = safe_range;
         settings_mut.run_args.logrows = logrows as u32;
 
         *settings_mut = GraphCircuit::new(model, &settings_mut.run_args)?
@@ -802,7 +850,7 @@ impl GraphCircuit {
         settings_mut.run_args.logrows =
             std::cmp::max(settings_mut.run_args.logrows, const_len_logrows);
         // recalculate the total number of constraints given the new logrows
-        let min_rows_from_constraints = (settings_mut.num_constraints as f32
+        let min_rows_from_constraints = (settings_mut.num_constraints as f64
             + reserved_blinding_rows)
             .log2()
             .ceil() as u32;
@@ -813,8 +861,8 @@ impl GraphCircuit {
             std::cmp::min(MAX_PUBLIC_SRS, settings_mut.run_args.logrows);
 
         info!(
-            "setting bits to: {}, setting logrows to: {}",
-            self.settings().run_args.bits,
+            "setting lookup_range to: {:?}, setting logrows to: {}",
+            self.settings().run_args.lookup_range,
             self.settings().run_args.logrows
         );
 
@@ -825,27 +873,7 @@ impl GraphCircuit {
     pub fn calibrate(&mut self, input: &[Tensor<Fp>]) -> Result<(), Box<dyn std::error::Error>> {
         let res = self.forward(&mut input.to_vec())?;
 
-        let blinding_offset = (ASSUMED_BLINDING_FACTORS as f64 / 2.0).ceil() + 1.0;
-        let max_range =
-            2i128.pow(self.settings().run_args.bits as u32 - 1) - blinding_offset as i128;
-
-        if res.max_lookup_inputs > max_range {
-            let recommended_bits = (res.max_lookup_inputs as f64 + blinding_offset)
-                .log2()
-                .ceil() as usize
-                + 1;
-            if recommended_bits <= MAX_PUBLIC_SRS as usize {
-                self.calc_min_logrows(&res, blinding_offset)
-            } else {
-                let err_string = format!(
-                    "No possible value of bits (estimate {}) can accomodate max value.",
-                    recommended_bits
-                );
-                Err(err_string.into())
-            }
-        } else {
-            self.calc_min_logrows(&res, blinding_offset)
-        }
+        self.calc_min_logrows(&res)
     }
 
     /// Runs the forward pass of the model / graph of computations and any associated hashing.
@@ -929,6 +957,7 @@ impl GraphCircuit {
             processed_params,
             processed_outputs,
             max_lookup_inputs: model_results.max_lookup_inputs,
+            min_lookup_inputs: model_results.min_lookup_inputs,
         };
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1107,7 +1136,8 @@ impl Circuit<Fp> for GraphCircuit {
         let base = Model::configure(
             cs,
             &vars,
-            params.run_args.bits,
+            params.run_args.lookup_range,
+            params.run_args.logrows as usize,
             params.required_lookups,
             params.check_mode,
         )

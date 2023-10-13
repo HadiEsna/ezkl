@@ -87,8 +87,12 @@ jobs:
       #   run: cargo wasi test matmul_col_ultra_overflow -- --include-ignored --nocapture
       # - name: Conv overflow (wasi)
       #   run: cargo wasi test conv_col_ultra_overflow -- --include-ignored --nocapture
+      - name: lookup overflow (wasi)
+        run: RUST_LOG=debug cargo wasi test --release lookup_ultra_overflow -- --include-ignored --nocapture
+      - name: lookup overflow (wasi)
+        run: RUST_LOG=debug cargo nextest run  --release lookup_ultra_overflow --no-capture -- --include-ignored
       - name: Conv + relu overflow (wasi)
-        run: cargo wasi test --release conv_relu_col_ultra_overflow -- --include-ignored --nocapture
+        run: RUST_LOG=debug cargo wasi test --release conv_relu_col_ultra_overflow -- --include-ignored --nocapture
       # - name: Matmul overflow
       #   run: RUST_LOG=debug cargo nextest run matmul_col_ultra_overflow --no-capture -- --include-ignored
       # - name: Conv overflow
@@ -227,10 +231,32 @@ jobs:
         with:
           crate: cargo-nextest
           locked: true
+      - uses: actions/checkout@v3
+      - name: Use pnpm 8
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+      - name: Use Node.js 18.12.1
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18.12.1"
+          cache: "pnpm"
+      - name: Install dependencies
+        run: |
+          pnpm install --no-frozen-lockfile
+        env:
+          CI: false
+          NODE_ENV: development
       - name: Install solc
         run: (hash svm 2>/dev/null || cargo install svm-rs) && svm install 0.8.20 && solc --version
       - name: Install Anvil
         run: cargo install --git https://github.com/foundry-rs/foundry --rev 95a93cd397f25f3f8d49d2851eb52bc2d52dd983 --profile local --locked anvil --force
+      - name: KZG prove and verify tests (EVM + on chain inputs)
+        run: cargo nextest run --release --verbose tests_evm::kzg_evm_on_chain_input_prove_and_verify --test-threads 1
+      - name: KZG prove and verify tests (EVM + on chain outputs)
+        run: cargo nextest run --release --verbose tests_evm::kzg_evm_on_chain_output_prove_and_verify --test-threads 1
+      - name: KZG prove and verify tests (EVM + on chain inputs & outputs)
+        run: cargo nextest run --release --verbose tests_evm::kzg_evm_on_chain_input_output_prove_and_verify --test-threads 1
       - name: KZG prove and verify tests (EVM)
         run: cargo nextest run --release --verbose tests_evm::kzg_evm_prove_and_verify --test-threads 1
       - name: KZG prove and verify tests (EVM + hashed inputs)
@@ -239,12 +265,6 @@ jobs:
         run: cargo nextest run --release --verbose tests_evm::kzg_evm_hashed_params_prove_and_verify --test-threads 1
       - name: KZG prove and verify tests (EVM + hashed outputs)
         run: cargo nextest run --release --verbose tests_evm::kzg_evm_hashed_output_prove_and_verify --test-threads 1
-      - name: KZG prove and verify tests (EVM + on chain inputs)
-        run: cargo nextest run --release --verbose tests_evm::kzg_evm_on_chain_input_prove_and_verify --test-threads 1
-      - name: KZG prove and verify tests (EVM + on chain outputs)
-        run: cargo nextest run --release --verbose tests_evm::kzg_evm_on_chain_output_prove_and_verify --test-threads 1
-      - name: KZG prove and verify tests (EVM + on chain inputs & outputs)
-        run: cargo nextest run --release --verbose tests_evm::kzg_evm_on_chain_input_output_prove_and_verify --test-threads 1
 
   prove-and-verify-tests:
     runs-on: ubuntu-latest-32-cores
@@ -265,14 +285,6 @@ jobs:
 
       - name: Add rust-src
         run: rustup component add rust-src --toolchain nightly-2023-08-24-x86_64-unknown-linux-gnu
-
-      - name: Build wasm files for both web and nodejs compilation targets
-        run: |
-          wasm-pack build --target nodejs --out-dir ./tests/wasm/nodejs . -- -Z build-std="panic_abort,std"
-
-      - name: Replace memory definition in nodejs
-        run: |
-          sed -i "3s|.*|imports['env'] = {memory: new WebAssembly.Memory({initial:20,maximum:65536,shared:true})}|" tests/wasm/nodejs/ezkl.js
       - uses: actions/checkout@v3
       - name: Use pnpm 8
         uses: pnpm/action-setup@v2
@@ -416,7 +428,7 @@ jobs:
         run: cargo nextest run --release tests_examples
 
   neg-tests:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [build, library-tests, docs]
     steps:
       - uses: actions/checkout@v4
@@ -537,6 +549,12 @@ jobs:
       #     # now dump the contents of the file into a file called kaggle.json
       #     echo $KAGGLE_API_KEY > /home/ubuntu/.kaggle/kaggle.json
       #     chmod 600 /home/ubuntu/.kaggle/kaggle.json
+      - name: Little transformer tutorial
+        run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_8_expects --no-capture
+      - name: Stacked Regression tutorial
+        run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_23_expects
+      - name: Linear Regression tutorial
+        run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_22_expects
       - name: Simple tutorial (public network and outputs)
         run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_20_expects
       - name: Simple tutorial (public inputs and outputs)
@@ -571,8 +589,6 @@ jobs:
         run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_1_expects
       - name: Simple aggregation tutorial
         run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_9_expects
-      - name: Little transformer tutorial
-        run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_8_expects --no-capture
       - name: Encrypted tutorial
         run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_2_expects
       - name: Hashed tutorial
@@ -583,3 +599,5 @@ jobs:
         run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_6_expects
       - name: Gan tutorial
         run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_0_expects
+      - name: GCN tutorial
+        run: source .env/bin/activate; cargo nextest run py_tests::tests::run_notebook_::tests_21_expects

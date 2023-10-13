@@ -247,7 +247,7 @@ struct PyRunArgs {
     #[pyo3(get, set)]
     pub scale_rebase_multiplier: u32,
     #[pyo3(get, set)]
-    pub bits: usize,
+    pub lookup_range: (i128, i128),
     #[pyo3(get, set)]
     pub logrows: u32,
     #[pyo3(get, set)]
@@ -270,7 +270,7 @@ impl PyRunArgs {
             input_scale: 7,
             param_scale: 7,
             scale_rebase_multiplier: 1,
-            bits: 16,
+            lookup_range: (-32768, 32768),
             logrows: 17,
             input_visibility: Visibility::Private,
             output_visibility: Visibility::Public,
@@ -288,7 +288,7 @@ impl From<PyRunArgs> for RunArgs {
             input_scale: py_run_args.input_scale,
             param_scale: py_run_args.param_scale,
             scale_rebase_multiplier: py_run_args.scale_rebase_multiplier,
-            bits: py_run_args.bits,
+            lookup_range: py_run_args.lookup_range,
             logrows: py_run_args.logrows,
             input_visibility: py_run_args.input_visibility,
             output_visibility: py_run_args.output_visibility,
@@ -305,7 +305,7 @@ impl Into<PyRunArgs> for RunArgs {
             input_scale: self.input_scale,
             param_scale: self.param_scale,
             scale_rebase_multiplier: self.scale_rebase_multiplier,
-            bits: self.bits,
+            lookup_range: self.lookup_range,
             logrows: self.logrows,
             input_visibility: self.input_visibility,
             output_visibility: self.output_visibility,
@@ -908,7 +908,7 @@ fn create_evm_verifier(
     abi_path,
     input_data
 ))]
-fn create_evm_data_attestation_verifier(
+fn create_evm_data_attestation(
     vk_path: PathBuf,
     srs_path: PathBuf,
     settings_path: PathBuf,
@@ -916,7 +916,7 @@ fn create_evm_data_attestation_verifier(
     abi_path: PathBuf,
     input_data: PathBuf,
 ) -> Result<bool, PyErr> {
-    crate::execute::create_evm_data_attestation_verifier(
+    crate::execute::create_evm_data_attestation(
         vk_path,
         srs_path,
         settings_path,
@@ -925,7 +925,7 @@ fn create_evm_data_attestation_verifier(
         input_data,
     )
     .map_err(|e| {
-        let err_str = format!("Failed to run create_evm_data_attestation_verifier: {}", e);
+        let err_str = format!("Failed to run create_evm_data_attestation: {}", e);
         PyRuntimeError::new_err(err_str)
     })?;
 
@@ -936,13 +936,15 @@ fn create_evm_data_attestation_verifier(
     addr_path,
     sol_code_path,
     rpc_url=None,
-    optimizer_runs=None
+    optimizer_runs=1,
+    private_key=None
 ))]
 fn deploy_evm(
     addr_path: PathBuf,
     sol_code_path: PathBuf,
     rpc_url: Option<String>,
-    optimizer_runs: Option<usize>,
+    optimizer_runs: usize,
+    private_key: Option<String>,
 ) -> Result<bool, PyErr> {
     Runtime::new()
         .unwrap()
@@ -951,6 +953,7 @@ fn deploy_evm(
             rpc_url,
             addr_path,
             optimizer_runs,
+            private_key,
         ))
         .map_err(|e| {
             let err_str = format!("Failed to run deploy_evm: {}", e);
@@ -966,7 +969,8 @@ fn deploy_evm(
     settings_path,
     sol_code_path,
     rpc_url=None,
-    optimizer_runs=None
+    optimizer_runs=1,
+    private_key=None
 ))]
 fn deploy_da_evm(
     addr_path: PathBuf,
@@ -974,7 +978,8 @@ fn deploy_da_evm(
     settings_path: PathBuf,
     sol_code_path: PathBuf,
     rpc_url: Option<String>,
-    optimizer_runs: Option<usize>,
+    optimizer_runs: usize,
+    private_key: Option<String>,
 ) -> Result<bool, PyErr> {
     Runtime::new()
         .unwrap()
@@ -985,6 +990,7 @@ fn deploy_da_evm(
             rpc_url,
             addr_path,
             optimizer_runs,
+            private_key,
         ))
         .map_err(|e| {
             let err_str = format!("Failed to run deploy_da_evm: {}", e);
@@ -996,28 +1002,37 @@ fn deploy_da_evm(
 /// verifies an evm compatible proof, you will need solc installed in your environment to run this
 #[pyfunction(signature = (
     proof_path,
-    addr,
+    addr_verifier,
     rpc_url=None,
-    data_attestation = false,
+    addr_da = None,
 ))]
 fn verify_evm(
     proof_path: PathBuf,
-    addr: &str,
+    addr_verifier: &str,
     rpc_url: Option<String>,
-    data_attestation: bool,
+    addr_da: Option<&str>,
 ) -> Result<bool, PyErr> {
-    let addr = H160::from_str(addr).map_err(|e| {
+    let addr_verifier = H160::from_str(addr_verifier).map_err(|e| {
         let err_str = format!("address is invalid: {}", e);
         PyRuntimeError::new_err(err_str)
     })?;
+    let addr_da = if let Some(addr_da) = addr_da {
+        let addr_da = H160::from_str(addr_da).map_err(|e| {
+            let err_str = format!("address is invalid: {}", e);
+            PyRuntimeError::new_err(err_str)
+        })?;
+        Some(addr_da)
+    } else {
+        None
+    };
 
     Runtime::new()
         .unwrap()
         .block_on(crate::execute::verify_evm(
             proof_path,
-            addr,
+            addr_verifier,
             rpc_url,
-            data_attestation,
+            addr_da,
         ))
         .map_err(|e| {
             let err_str = format!("Failed to run verify_evm: {}", e);
@@ -1114,7 +1129,7 @@ fn ezkl(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_evm, m)?)?;
     m.add_function(wrap_pyfunction!(print_proof_hex, m)?)?;
     m.add_function(wrap_pyfunction!(create_evm_verifier_aggr, m)?)?;
-    m.add_function(wrap_pyfunction!(create_evm_data_attestation_verifier, m)?)?;
+    m.add_function(wrap_pyfunction!(create_evm_data_attestation, m)?)?;
 
     Ok(())
 }

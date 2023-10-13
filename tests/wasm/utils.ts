@@ -1,5 +1,8 @@
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs'
 import JSONBig from 'json-bigint';
+import { vecU64ToFelt } from '@ezkljs/engine/nodejs'
+const solc = require('solc');
 
 export async function readEzklArtifactsFile(path: string, example: string, filename: string): Promise<Uint8ClampedArray> {
     //const filePath = path.join(__dirname, '..', '..', 'ezkl', 'examples', 'onnx', example, filename);
@@ -40,3 +43,53 @@ export function serialize(data: object | string): Uint8ClampedArray { // data is
     // Step 3: Convert to Uint8ClampedArray
     return new Uint8ClampedArray(uint8Array.buffer);
 }
+
+export function getSolcInput(path: string, example: string) {
+    return {
+      language: 'Solidity',
+      sources: {
+        'artifacts/Verifier.sol': {
+          content: fsSync.readFileSync(`${path}/${example}/kzg.sol`, 'utf-8'),
+        },
+        // If more contracts were to be compiled, they should have their own entries here
+      },
+      settings: {
+        optimizer: {
+          enabled: true,
+          runs: 200,
+        },
+        evmVersion: 'london',
+        outputSelection: {
+          '*': {
+            '*': ['abi', 'evm.bytecode'],
+          },
+        },
+      },
+    }
+  }
+  
+  export function compileContracts(path: string, example: string) {
+    const input = getSolcInput(path, example)
+    const output = JSON.parse(solc.compile(JSON.stringify(input)))
+  
+    let compilationFailed = false
+  
+    if (output.errors) {
+      for (const error of output.errors) {
+        if (error.severity === 'error') {
+          console.error(error.formattedMessage)
+          compilationFailed = true
+        } else {
+          console.warn(error.formattedMessage)
+        }
+      }
+    }
+  
+    if (compilationFailed) {
+      return undefined
+    }
+  
+    return output
+  }
+
+  

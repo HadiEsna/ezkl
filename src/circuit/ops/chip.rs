@@ -161,6 +161,8 @@ pub struct BaseConfig<F: PrimeField + TensorType + PartialOrd> {
     /// the VarTensor reserved for lookup operations (could be an element of inputs or the same as output)
     /// Note that you should be careful to ensure that the lookup_output is not simultaneously assigned to by other non-lookup operations eg. in the case of composite ops.
     pub lookup_output: VarTensor,
+    ///
+    pub lookup_index: VarTensor,
     /// [Selector]s generated when configuring the layer. We use a [BTreeMap] as we expect to configure [BaseOp].
     pub selectors: BTreeMap<(BaseOp, usize), Selector>,
     /// [Selector]s generated when configuring the layer. We use a [BTreeMap] as we expect to configure many lookup ops.
@@ -180,6 +182,7 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
             lookup_input: VarTensor::dummy(col_size),
             output: VarTensor::dummy(col_size),
             lookup_output: VarTensor::dummy(col_size),
+            lookup_index: VarTensor::dummy(col_size),
             selectors: BTreeMap::new(),
             lookup_selectors: BTreeMap::new(),
             tables: BTreeMap::new(),
@@ -265,6 +268,7 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
             inputs: inputs.to_vec(),
             lookup_input: VarTensor::Empty,
             lookup_output: VarTensor::Empty,
+            lookup_index: VarTensor::Empty,
             tables: BTreeMap::new(),
             output: output.clone(),
             check_mode,
@@ -278,7 +282,9 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
         cs: &mut ConstraintSystem<F>,
         input: &VarTensor,
         output: &VarTensor,
-        bits: usize,
+        index: &VarTensor,
+        lookup_range: (i128, i128),
+        logrows: usize,
         nl: &LookupOp,
     ) -> Result<(), Box<dyn Error>>
     where
@@ -291,9 +297,15 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
         let table = if !self.tables.contains_key(nl) {
             // as all tables have the same input we see if there's another table who's input we can reuse
             let table = if let Some(table) = self.tables.values().next() {
-                Table::<F>::configure(cs, bits, nl, Some(table.table_input))
+                Table::<F>::configure(
+                    cs,
+                    lookup_range,
+                    logrows,
+                    nl,
+                    Some(table.table_inputs.clone()),
+                )
             } else {
-                Table::<F>::configure(cs, bits, nl, None)
+                Table::<F>::configure(cs, lookup_range, logrows, nl, None)
             };
             self.tables.insert(nl.clone(), table.clone());
             table
@@ -302,35 +314,82 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
         };
 
         for x in 0..input.num_cols() {
-            let qlookup = cs.complex_selector();
-            selectors.insert((nl.clone(), x), qlookup);
-            cs.lookup("", |cs| {
-                let qlookup = cs.query_selector(qlookup);
-                let not_qlookup = Expression::Constant(<F as Field>::ONE) - qlookup.clone();
-                let (default_x, default_y): (F, F) = nl.default_pair();
-                vec![
-                    (
-                        match &input {
+            let len = table.selector_constructor.degree;
+
+            let multi_col_selector = cs.complex_selector();
+
+            for ((col_idx, input_col), output_col) in table
+                .table_inputs
+                .iter()
+                .enumerate()
+                .zip(table.table_outputs.iter())
+            {
+                cs.lookup("", |cs| {
+                    let mut res = vec![];
+                    let sel = cs.query_selector(multi_col_selector.clone());
+
+                    let synthetic_sel = match len {
+                        1 => Expression::Constant(F::from(1)),
+                        _ => match index {
                             VarTensor::Advice { inner: advices, .. } => {
-                                qlookup.clone() * cs.query_advice(advices[x], Rotation(0))
-                                    + not_qlookup.clone() * default_x
+                                cs.query_advice(advices[x], Rotation(0))
                             }
                             _ => panic!("wrong input type"),
                         },
-                        table.table_input,
-                    ),
-                    (
-                        match &output {
-                            VarTensor::Advice { inner: advices, .. } => {
-                                qlookup * cs.query_advice(advices[x], Rotation(0))
-                                    + not_qlookup * default_y
-                            }
-                            _ => panic!("wrong output type"),
-                        },
-                        table.table_output,
-                    ),
-                ]
-            });
+                    };
+
+                    let input_query = match &input {
+                        VarTensor::Advice { inner: advices, .. } => {
+                            cs.query_advice(advices[x], Rotation(0))
+                        }
+                        _ => panic!("wrong input type"),
+                    };
+
+                    let output_query = match &output {
+                        VarTensor::Advice { inner: advices, .. } => {
+                            cs.query_advice(advices[x], Rotation(0))
+                        }
+                        _ => panic!("wrong input type"),
+                    };
+
+                    // we index from 1 to avoid the zero element creating soundness issues
+                    // this is 0 if the index is the same as the column index (starting from 1)
+
+                    let col_expr = sel.clone()
+                        * table
+                            .selector_constructor
+                            .get_expr_at_idx(col_idx, synthetic_sel);
+
+                    let multiplier = table.selector_constructor.get_selector_val_at_idx(col_idx);
+
+                    log::debug!("col expr at idx {:?}: {:?}", col_idx, col_expr,);
+                    log::debug!("col multiplier at idx {:?}: {:?}", col_idx, multiplier);
+
+                    let not_expr = Expression::Constant(multiplier) - col_expr.clone();
+
+                    let (default_x, default_y) = if len > 1 {
+                        table.get_first_element(col_idx)
+                    } else {
+                        nl.default_pair()
+                    };
+
+                    res.extend([
+                        (
+                            col_expr.clone() * input_query.clone()
+                                + not_expr.clone() * Expression::Constant(default_x),
+                            input_col.clone(),
+                        ),
+                        (
+                            col_expr.clone() * output_query.clone()
+                                + not_expr.clone() * Expression::Constant(default_y),
+                            output_col.clone(),
+                        ),
+                    ]);
+
+                    res
+                });
+            }
+            selectors.insert((nl.clone(), x), multi_col_selector);
         }
         self.lookup_selectors.extend(selectors);
         // if we haven't previously initialized the input/output, do so now
@@ -341,6 +400,10 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
         if let VarTensor::Empty = self.lookup_output {
             debug!("assigning lookup output");
             self.lookup_output = output.clone();
+        }
+        if let VarTensor::Empty = self.lookup_index {
+            debug!("assigning lookup index");
+            self.lookup_index = index.clone();
         }
         Ok(())
     }

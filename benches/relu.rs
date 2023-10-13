@@ -14,7 +14,7 @@ use halo2_proofs::{
 use halo2curves::bn256::{Bn256, Fr};
 use rand::Rng;
 
-const BITS: usize = 8;
+const BITS: (i128, i128) = (-32768, 32768);
 static mut LEN: usize = 4;
 const K: usize = 16;
 
@@ -34,7 +34,7 @@ impl Circuit<Fr> for NLCircuit {
 
     fn configure(cs: &mut ConstraintSystem<Fr>) -> Self::Config {
         unsafe {
-            let advices = (0..2)
+            let advices = (0..3)
                 .map(|_| VarTensor::new_advice(cs, K, LEN))
                 .collect::<Vec<_>>();
 
@@ -43,7 +43,7 @@ impl Circuit<Fr> for NLCircuit {
             let mut config = Config::default();
 
             config
-                .configure_lookup(cs, &advices[0], &advices[1], BITS, &nl)
+                .configure_lookup(cs, &advices[0], &advices[1], &advices[2], BITS, K, &nl)
                 .unwrap();
 
             config

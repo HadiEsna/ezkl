@@ -76,7 +76,7 @@ mod py_tests {
                     "tf2onnx==1.14.0",
                     "pytorch-lightning==2.0.6",
                     "sk2torch==1.2.0",
-                    "scikit-learn==1.1.1",
+                    "scikit-learn==1.3.1",
                     "xgboost==1.7.6",
                     "hummingbird-ml==0.4.9",
                     "lightgbm==4.0.0",
@@ -115,7 +115,7 @@ mod py_tests {
         }
     }
 
-    const TESTS: [&str; 21] = [
+    const TESTS: [&str; 24] = [
         "mnist_gan.ipynb",
         // "mnist_vae.ipynb",
         "keras_simple_demo.ipynb",
@@ -138,6 +138,9 @@ mod py_tests {
         "svm.ipynb",
         "simple_demo_public_input_output.ipynb",
         "simple_demo_public_network_output.ipynb",
+        "gcn.ipynb",
+        "linear_regression.ipynb",
+        "stacked_regression.ipynb",
     ];
 
     macro_rules! test_func {
@@ -150,7 +153,7 @@ mod py_tests {
             use super::*;
 
 
-            seq!(N in 0..=20 {
+            seq!(N in 0..=23 {
 
             #(#[test_case(TESTS[N])])*
             fn run_notebook_(test: &str) {
