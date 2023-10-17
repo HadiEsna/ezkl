@@ -326,7 +326,7 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
             {
                 cs.lookup("", |cs| {
                     let mut res = vec![];
-                    let sel = cs.query_selector(multi_col_selector.clone());
+                    let sel = cs.query_selector(multi_col_selector);
 
                     let synthetic_sel = match len {
                         1 => Expression::Constant(F::from(1)),
@@ -362,27 +362,27 @@ impl<F: PrimeField + TensorType + PartialOrd> BaseConfig<F> {
 
                     let multiplier = table.selector_constructor.get_selector_val_at_idx(col_idx);
 
-                    log::debug!("col expr at idx {:?}: {:?}", col_idx, col_expr,);
-                    log::debug!("col multiplier at idx {:?}: {:?}", col_idx, multiplier);
-
                     let not_expr = Expression::Constant(multiplier) - col_expr.clone();
 
-                    let (default_x, default_y) = if len > 1 {
-                        table.get_first_element(col_idx)
-                    } else {
-                        nl.default_pair()
-                    };
+                    let (default_x, default_y) = table.get_first_element(col_idx);
+
+                    log::debug!("---------------- col {:?} ------------------", col_idx,);
+                    log::debug!("expr: {:?}", col_expr,);
+                    log::debug!("multiplier: {:?}", multiplier);
+                    log::debug!("not_expr: {:?}", not_expr);
+                    log::debug!("default x: {:?}", default_x);
+                    log::debug!("default y: {:?}", default_y);
 
                     res.extend([
                         (
                             col_expr.clone() * input_query.clone()
                                 + not_expr.clone() * Expression::Constant(default_x),
-                            input_col.clone(),
+                            *input_col,
                         ),
                         (
                             col_expr.clone() * output_query.clone()
                                 + not_expr.clone() * Expression::Constant(default_y),
-                            output_col.clone(),
+                            *output_col,
                         ),
                     ]);
 
