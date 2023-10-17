@@ -338,7 +338,7 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     }
 }
 
-pub(crate) fn gen_srs_cmd(srs_path: PathBuf, logrows: u32) -> Result<(), Box<dyn Error>> {
+pub fn gen_srs_cmd(srs_path: PathBuf, logrows: u32) -> Result<(), Box<dyn Error>> {
     let params = gen_srs::<KZGCommitmentScheme<Bn256>>(logrows);
     save_params::<KZGCommitmentScheme<Bn256>>(&srs_path, &params)?;
     Ok(())
@@ -365,7 +365,7 @@ async fn fetch_srs(uri: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn get_srs_cmd(
+pub async fn get_srs_cmd(
     srs_path: PathBuf,
     settings_path: Option<PathBuf>,
     logrows: Option<u32>,
@@ -410,13 +410,13 @@ pub(crate) async fn get_srs_cmd(
     Ok(())
 }
 
-pub(crate) fn table(model: PathBuf, run_args: RunArgs) -> Result<(), Box<dyn Error>> {
+pub fn table(model: PathBuf, run_args: RunArgs) -> Result<(), Box<dyn Error>> {
     let model = Model::from_run_args(&run_args, &model)?;
     info!("\n {}", model.table_nodes());
     Ok(())
 }
 
-pub(crate) async fn gen_witness(
+pub async fn gen_witness(
     compiled_circuit_path: PathBuf,
     data: PathBuf,
     output: Option<PathBuf>,
@@ -455,7 +455,7 @@ pub(crate) async fn gen_witness(
 }
 
 /// Generate a circuit settings file
-pub(crate) fn gen_circuit_settings(
+pub fn gen_circuit_settings(
     model_path: PathBuf,
     params_output: PathBuf,
     run_args: RunArgs,
@@ -467,7 +467,7 @@ pub(crate) fn gen_circuit_settings(
 
 // not for wasm targets
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn init_spinner() -> ProgressBar {
+pub fn init_spinner() -> ProgressBar {
     let pb = indicatif::ProgressBar::new_spinner();
     pb.set_draw_target(indicatif::ProgressDrawTarget::stdout());
     pb.enable_steady_tick(Duration::from_millis(200));
@@ -489,7 +489,7 @@ pub(crate) fn init_spinner() -> ProgressBar {
 
 // not for wasm targets
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn init_bar(len: u64) -> ProgressBar {
+pub fn init_bar(len: u64) -> ProgressBar {
     let pb = ProgressBar::new(len);
     pb.set_draw_target(indicatif::ProgressDrawTarget::stdout());
     pb.enable_steady_tick(Duration::from_millis(200));
@@ -508,7 +508,7 @@ use colored_json::ToColoredJson;
 /// Calibrate the circuit parameters to a given a dataset
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(trivial_casts)]
-pub(crate) async fn calibrate(
+pub async fn calibrate(
     model_path: PathBuf,
     data: PathBuf,
     settings_path: PathBuf,
@@ -779,7 +779,7 @@ pub(crate) async fn calibrate(
     Ok(())
 }
 
-pub(crate) async fn mock(
+pub async fn mock(
     compiled_circuit_path: PathBuf,
     data_path: PathBuf,
 ) -> Result<(), Box<dyn Error>> {
@@ -806,7 +806,7 @@ pub(crate) async fn mock(
     Ok(())
 }
 
-pub(crate) fn print_proof_hex(proof_path: PathBuf) -> Result<(), Box<dyn Error>> {
+pub fn print_proof_hex(proof_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let proof = Snark::load::<KZGCommitmentScheme<Bn256>>(&proof_path)?;
     for instance in proof.instances {
         println!("{:?}", instance);
@@ -816,7 +816,7 @@ pub(crate) fn print_proof_hex(proof_path: PathBuf) -> Result<(), Box<dyn Error>>
 }
 
 #[cfg(feature = "render")]
-pub(crate) fn render(model: PathBuf, output: PathBuf, args: RunArgs) -> Result<(), Box<dyn Error>> {
+pub fn render(model: PathBuf, output: PathBuf, args: RunArgs) -> Result<(), Box<dyn Error>> {
     let circuit = GraphCircuit::from_run_args(&args, &model)?;
     info!("Rendering circuit");
 
@@ -835,7 +835,7 @@ pub(crate) fn render(model: PathBuf, output: PathBuf, args: RunArgs) -> Result<(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn create_evm_verifier(
+pub fn create_evm_verifier(
     vk_path: PathBuf,
     srs_path: PathBuf,
     settings_path: PathBuf,
@@ -874,7 +874,7 @@ pub(crate) fn create_evm_verifier(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn create_evm_data_attestation(
+pub fn create_evm_data_attestation(
     vk_path: PathBuf,
     srs_path: PathBuf,
     settings_path: PathBuf,
@@ -946,7 +946,7 @@ pub(crate) fn create_evm_data_attestation(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn deploy_da_evm(
+pub async fn deploy_da_evm(
     data: PathBuf,
     settings_path: PathBuf,
     sol_code_path: PathBuf,
@@ -974,7 +974,7 @@ pub(crate) async fn deploy_da_evm(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn deploy_evm(
+pub async fn deploy_evm(
     sol_code_path: PathBuf,
     rpc_url: Option<String>,
     addr_path: PathBuf,
@@ -998,7 +998,7 @@ pub(crate) async fn deploy_evm(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn verify_evm(
+pub async fn verify_evm(
     proof_path: PathBuf,
     addr_verifier: H160,
     rpc_url: Option<String>,
@@ -1029,7 +1029,7 @@ pub(crate) async fn verify_evm(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn create_evm_aggregate_verifier(
+pub fn create_evm_aggregate_verifier(
     vk_path: PathBuf,
     srs_path: PathBuf,
     sol_code_path: PathBuf,
@@ -1085,7 +1085,7 @@ pub(crate) fn create_evm_aggregate_verifier(
     Ok(())
 }
 
-pub(crate) fn compile_circuit(
+pub fn compile_circuit(
     model_path: PathBuf,
     compiled_circuit: PathBuf,
     settings_path: PathBuf,
@@ -1096,7 +1096,7 @@ pub(crate) fn compile_circuit(
     Ok(())
 }
 
-pub(crate) fn setup(
+pub fn setup(
     compiled_circuit: PathBuf,
     srs_path: PathBuf,
     vk_path: PathBuf,
@@ -1121,7 +1121,7 @@ pub(crate) fn setup(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn setup_test_evm_witness(
+pub async fn setup_test_evm_witness(
     data_path: PathBuf,
     compiled_circuit_path: PathBuf,
     test_data: PathBuf,
@@ -1160,7 +1160,7 @@ pub(crate) async fn setup_test_evm_witness(
 #[cfg(not(target_arch = "wasm32"))]
 use crate::pfsys::ProofType;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn test_update_account_calls(
+pub async fn test_update_account_calls(
     addr: H160,
     data: PathBuf,
     rpc_url: Option<String>,
@@ -1175,7 +1175,7 @@ pub(crate) async fn test_update_account_calls(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn prove(
+pub async fn prove(
     data_path: PathBuf,
     compiled_circuit_path: PathBuf,
     pk_path: PathBuf,
@@ -1239,7 +1239,7 @@ pub(crate) async fn prove(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn fuzz(
+pub async fn fuzz(
     compiled_circuit_path: PathBuf,
     data_path: PathBuf,
     transcript: TranscriptType,
@@ -1422,7 +1422,7 @@ pub(crate) async fn fuzz(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn run_fuzz_fn(
+pub fn run_fuzz_fn(
     num_runs: usize,
     f: impl Fn() -> Result<(), ()> + std::marker::Sync + std::marker::Send,
     passed: &AtomicBool,
@@ -1449,7 +1449,7 @@ pub(crate) fn run_fuzz_fn(
     );
 }
 
-pub(crate) fn mock_aggregate(
+pub fn mock_aggregate(
     aggregation_snarks: Vec<PathBuf>,
     logrows: u32,
 ) -> Result<(), Box<dyn Error>> {
@@ -1477,7 +1477,7 @@ pub(crate) fn mock_aggregate(
     Ok(())
 }
 
-pub(crate) fn setup_aggregate(
+pub fn setup_aggregate(
     sample_snarks: Vec<PathBuf>,
     vk_path: PathBuf,
     pk_path: PathBuf,
@@ -1504,7 +1504,7 @@ pub(crate) fn setup_aggregate(
     Ok(())
 }
 
-pub(crate) fn aggregate(
+pub fn aggregate(
     proof_path: PathBuf,
     aggregation_snarks: Vec<PathBuf>,
     pk_path: PathBuf,
@@ -1558,7 +1558,7 @@ pub(crate) fn aggregate(
     Ok(())
 }
 
-pub(crate) fn verify(
+pub fn verify(
     proof_path: PathBuf,
     settings_path: PathBuf,
     vk_path: PathBuf,
@@ -1582,7 +1582,7 @@ pub(crate) fn verify(
     result.map_err(|e| e.into())
 }
 
-pub(crate) fn verify_aggr(
+pub fn verify_aggr(
     proof_path: PathBuf,
     vk_path: PathBuf,
     srs_path: PathBuf,
@@ -1609,7 +1609,7 @@ pub(crate) fn verify_aggr(
 }
 
 /// helper function for load_params
-pub(crate) fn load_params_cmd(
+pub fn load_params_cmd(
     srs_path: PathBuf,
     logrows: u32,
 ) -> Result<ParamsKZG<Bn256>, Box<dyn Error>> {

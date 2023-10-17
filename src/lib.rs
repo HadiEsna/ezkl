@@ -14,7 +14,6 @@
     unused_comparisons,
     unused_parens,
     while_true,
-    missing_docs,
     trivial_casts,
     trivial_numeric_casts,
     unused_extern_crates,
